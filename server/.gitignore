@@ -1,0 +1,8 @@
+__pycache__/
+.DS_Store
+*.bak
+world*.json
+users.json
+sessions.json
+unseen/
+waze_capture*/
