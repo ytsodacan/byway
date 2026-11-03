@@ -52,10 +52,10 @@ def _kdf(pw, salt):
     return hashlib.scrypt(pw.encode(), salt=salt, n=2 ** 14, r=8, p=1, dklen=32)
 
 
-def add_user(name, pw):
+def add_user(name, pw, strict=True):
     if not NAME_RE.match(name):
         raise ValueError("name must be 3-32 letters, digits, _ . -")
-    if len(pw) < 8:
+    if strict and len(pw) < 8:
         raise ValueError("password must be at least 8 characters")
     with _lock:
         users = _load(USERS)

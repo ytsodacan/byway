@@ -1047,6 +1047,15 @@ class Server:
         if kind == "login":
             cred = self.login_creds(body)
             user = auth.verify(*cred) if cred else None
+            if user is None and cred and os.environ.get("BYWAY_AUTO_CREATE", "1") != "0" and \
+                    cred[0] not in auth.list_users():
+                # a login for a name we have never seen (the app's saved sign-in from before this server): adopt it
+                try:
+                    auth.add_user(cred[0], cred[1], strict=False)
+                    log(f"first login for unknown name {cred[0]!r}: account created with the password supplied")
+                    user = auth.verify(*cred)
+                except ValueError:
+                    pass
             if user is None:                      # private login: only accounts in auth.py get in
                 return self.login_denied(cred, body)
             who = f" as {user['name']}"
