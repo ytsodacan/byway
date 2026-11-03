@@ -1,0 +1,2 @@
+mitmproxy>=10
+protobuf>=4

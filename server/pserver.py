@@ -50,15 +50,18 @@ except ImportError:  # selftest / CLI work without mitmproxy
     http = None
 
 HOME = pathlib.Path.home()
-CAP = pathlib.Path(os.environ["WAZE_CAPTURE_DIR"]) if os.environ.get("WAZE_CAPTURE_DIR") else HOME / "waze_capture"
-DESC = HOME / "waze_protos" / "descriptors.desc"
-WORLD = HOME / "waze_private" / "world.json"
+# BYWAY_HOME (e.g. a mounted /data volume) holds everything: capture/, protos/descriptors.desc, private/.
+# Unset, the old per-user locations (~/waze_capture, ~/waze_protos, ~/waze_private) are used.
+BH = pathlib.Path(os.environ["BYWAY_HOME"]) if os.environ.get("BYWAY_HOME") else None
+CAP = pathlib.Path(os.environ["WAZE_CAPTURE_DIR"]) if os.environ.get("WAZE_CAPTURE_DIR") else (BH / "capture" if BH else HOME / "waze_capture")
+DESC = BH / "protos" / "descriptors.desc" if BH else HOME / "waze_protos" / "descriptors.desc"
+WORLD = (BH / "private" if BH else HOME / "waze_private") / "world.json"
 WORLD_ELEMS = {2004: "add_wazer", 2708: "add_alert_action"}
 TIME_ELEMS = {2150, 2168}          # response_timestamp, sync_config_response
 DROP_HEADERS = {"content-length", "content-encoding", "transfer-encoding", "connection"}
 
 
-PRIV = HOME / "waze_private"
+PRIV = BH / "private" if BH else HOME / "waze_private"
 UNSEEN = PRIV / "unseen"
 
 
@@ -136,6 +139,13 @@ class Codec:
             if v.name == name:
                 return v.number
         raise KeyError(f"enum {type_name[1:]} has no value {name!r}")
+
+    def enum_ok(self, type_name, name):
+        try:
+            self.enum_num(type_name, name)
+            return True
+        except KeyError:
+            return False
 
     def encode(self, msg, obj):
         out = bytearray()
@@ -444,7 +454,7 @@ class Server:
         for p in protos:
             for el in batch_elems(p):
                 c = cmd_of(el)
-                if c in (2001, 2184):                      # legacy text lines / client_info need no answer
+                if c in (2001, 2184) or c in self.LIVE_CMDS:   # legacy text lines / client_info need no answer; live cmds answered elsewhere
                     continue
                 e, note = self.answer_for(c, now)
                 notes.append(note)
@@ -662,7 +672,12 @@ class Server:
                         log(f"world: skipping a wazer ({ex})")
             if cache[key] is not None:
                 out[2004].append(cache[key])
-        for a in near(w.get("alerts", []), lambda a: a["realtime_alert"]["alert_info"]["position"], self.MAX_ALERTS):
+        live = []
+        for r in self.reports():
+            a = copy.deepcopy(r["alert"])
+            a["_age_sec"] = max(int(now - r["created"]), 0)
+            live.append(a)
+        for a in near(live + w.get("alerts", []), lambda a: a["realtime_alert"]["alert_info"]["position"], self.MAX_ALERTS):
             try:
                 a = copy.deepcopy(a)
                 age = a.pop("_age_sec", 300)
@@ -673,6 +688,168 @@ class Server:
                     bad.add(str(ex))
                     log(f"world: skipping an alert ({ex})")
         return out
+
+    # ----- live reports: add_user_reported_alert (2737), thumbs up (2633 / ThumbsUp,id) -----
+
+    REPORTS = PRIV / "reports.json"
+    REPORT_TTL = int(os.environ.get("PSERVER_REPORT_TTL", str(3 * 3600)))
+    LIVE_CMDS = {2737, 2633}
+    # report detail field -> (AlertType, {detail enum value: AlertSubType}, default subtype)
+    DETAIL_MAP = {
+        "traffic": ("JAM", {"TRAFFIC_LIGHT": "JAM_LIGHT_TRAFFIC", "TRAFFIC_MODERATE": "JAM_MODERATE_TRAFFIC",
+                            "TRAFFIC_HEAVY": "JAM_HEAVY_TRAFFIC", "TRAFFIC_STANDSTILL": "JAM_STAND_STILL_TRAFFIC"}, "NO_SUBTYPE"),
+        "police": ("POLICE", {"POLICE_HIDDEN": "POLICE_HIDING", "POLICE_MOBILE_CAMERA": "POLICE_WITH_MOBILE_CAMERA"}, "POLICE_VISIBLE"),
+        "crash": ("ACCIDENT", {"CRASH_MINOR": "ACCIDENT_MINOR", "CRASH_MAJOR": "ACCIDENT_MAJOR"}, "NO_SUBTYPE"),
+        "hazard_on_road": ("HAZARD", {"HAZARD_CONSTRUCTION": "HAZARD_ON_ROAD_CONSTRUCTION",
+                                      "HAZARD_VEHICLE_STOPPED": "HAZARD_ON_ROAD_CAR_STOPPED",
+                                      "HAZARD_OBJECT_ON_ROAD": "HAZARD_ON_ROAD_OBJECT", "HAZARD_POTHOLE": "HAZARD_ON_ROAD_POT_HOLE",
+                                      "HAZARD_BROKEN_TRAFFIC_LIGHT": "HAZARD_ON_ROAD_TRAFFIC_LIGHT_FAULT",
+                                      "HAZARD_OIL": "HAZARD_ON_ROAD_OIL"}, "HAZARD_ON_ROAD"),
+        "weather": ("HAZARD", {"WEATHER_FLOOD": "HAZARD_WEATHER_FLOOD", "WEATHER_FOG": "HAZARD_WEATHER_FOG",
+                               "WEATHER_ICY_ROAD": "HAZARD_ON_ROAD_ICE", "WEATHER_HEAT_WAVE": "HAZARD_WEATHER_HEAT_WAVE",
+                               "WEATHER_SLIPPERY_ROAD": "BAD_WEATHER_SLIPPERY_ROAD"}, "HAZARD_WEATHER"),
+        "blocked_lane": ("NEW_LANE_CLOSED", {"BLOCKED_LANE_LEFT": "LANE_CLOSURE_LEFT_LANE", "BLOCKED_LANE_CENTER": "LANE_CLOSURE_CENTER_LANE",
+                                             "BLOCKED_LANE_RIGHT": "LANE_CLOSURE_RIGHT_LANE"}, "LANE_CLOSURE_BLOCKED_LANES"),
+        "permanent_hazard": ("PERMANENT_HAZARD", {}, "NO_SUBTYPE"),
+        "closure": ("ROAD_CLOSED", {"CLOSURE_CONSTRUCTION": "ROAD_CLOSED_CONSTRUCTION", "CLOSURE_EVENT": "ROAD_CLOSED_EVENT"}, "ROAD_CLOSED_HAZARD"),
+        "turn_closure": ("TURN_CLOSED", {}, "TURN_CLOSED_EVENT"),
+        "personal_safety": ("PERSONAL_SAFETY", {}, "DEFAULT_PERSONAL_SAFETY"),
+        "camera": ("CAMERA", {}, "DEFAULT_CAMERA"),
+        "animal": ("ANIMAL", {"ANIMAL_ON_ROAD": "ANIMAL_ALERT_ON_ROAD", "ANIMAL_ON_SHOULDER": "ANIMAL_ALERT_ON_SHOULDER"}, "ANIMAL_ALERT_DEFAULT"),
+    }
+
+    def reports(self):
+        """Live reports still within their lifetime (list of {alert, created, reporter})."""
+        try:
+            now = time.time()
+            return [r for r in json.loads(self.REPORTS.read_text()) if now - r["created"] < self.REPORT_TTL]
+        except (OSError, ValueError, KeyError):
+            return []
+
+    def _save_reports(self, rs):
+        PRIV.mkdir(parents=True, exist_ok=True)
+        tmp = self.REPORTS.with_suffix(".tmp")
+        tmp.write_text(json.dumps(rs))
+        tmp.replace(self.REPORTS)
+
+    def _enum_name(self, enum_type, num):
+        e = self.sc.enums.get(enum_type)
+        return next((v.name for v in (e.value if e else []) if v.number == num), None)
+
+    def parse_report(self, el):
+        """add_user_reported_alert_request element -> dict(lon, lat, azimuth, nodes, direction, detail, enum) or None."""
+        req = D.parse_wire(el)[0][2]
+        out = dict(lon=0, lat=0, az=0, nodes=(0, 0), direction="BOTH", detail=None, enum=None)
+        rt = ".com.waze.proto.alertsonmap.AddUserReportedAlertRequest"
+        for n, w, v in D.parse_wire(req):
+            if n == 1 and w == 2:                                   # user_position
+                for n1, w1, v1 in D.parse_wire(v):
+                    if n1 == 1 and w1 == 2:                         # gps_position
+                        for n2, w2, v2 in D.parse_wire(v1):
+                            if n2 == 1 and w2 == 2:                 # coordinate
+                                for n3, w3, v3 in D.parse_wire(v2):
+                                    if w3 == 0:
+                                        v3 = v3 - (1 << 32) if v3 >= (1 << 31) else v3
+                                        if n3 == 101: out["lon"] = v3
+                                        if n3 == 102: out["lat"] = v3
+                    if n1 == 2 and w1 == 2:                         # segment_nodes
+                        nd = {a: b for a, c, b in D.parse_wire(v1) if c == 0}
+                        out["nodes"] = (nd.get(1, 0), nd.get(2, 0))
+            elif n == 2 and w == 0:
+                out["az"] = v
+            elif n == 4 and w == 0:
+                out["direction"] = next((self._enum_name(k, v) for k in self.sc.enums if k.endswith(".SegDirection") and self._enum_name(k, v)), "BOTH")
+            elif n == 3 and w == 2:                                 # alert_details
+                hit = self.sc.lookup(".com.waze.proto.alertsonmap.ReportedAlertDetails", 0)  # type name resolved below
+                for n1, w1, v1 in D.parse_wire(v):
+                    fd = next((f for f in self.sc.msgs[".com.waze.proto.alertsonmap.ReportedAlertDetails"].field if f.number == n1), None)
+                    if fd is None:
+                        continue
+                    ev = None
+                    tf = next((f for f in self.sc.msgs[fd.type_name].field if f.number == 1), None)
+                    for n2, w2, v2 in D.parse_wire(v1):
+                        if n2 == 1 and w2 == 0 and tf is not None and tf.type == D.ENUM:
+                            ev = (tf.type_name, self._enum_name(tf.type_name, v2))
+                    out["detail"], out["enum"] = fd.name, ev
+        return out
+
+    def report_to_alert(self, rep, rid, uuid, reporter, created):
+        typ, sub_map, default = self.DETAIL_MAP.get(rep["detail"], ("MISC", {}, "NO_SUBTYPE"))
+        ev = rep["enum"][1] if rep["enum"] else None
+        sub = sub_map.get(ev, default)
+        if rep["detail"] == "permanent_hazard" and ev:
+            cand = "PERMANENT_HAZARD_" + ev.split("_", 1)[-1]
+            sub = cand if self.codec.enum_ok(".com.waze.proto.alertsonmap.AlertSubType", cand) else "NO_SUBTYPE"
+        info = {"type": typ, "sub_type": sub,
+                "position": {"lon_times_1000000": rep["lon"], "lat_times_1000000": rep["lat"]},
+                "segment_direction_id": {"from_node": rep["nodes"][0], "to_node": rep["nodes"][1]},
+                "seg_direction": rep["direction"] if rep["direction"] != "UNKNOWN_DIRECTION" else "BOTH",
+                "azymuth": rep["az"], "on_route": False, "priority": 1000}
+        if rep["detail"] and ev:
+            info["alert_details"] = {rep["detail"]: {"type": ev}}
+        return {"realtime_alert": {"id": rid, "alert_info": info,
+                "alert_reporting_info": {"primary_alert_id": -1, "kind": "PRIMARY", "report_time": int(created),
+                    "reporter_username": reporter, "current_user_is_reporter": False, "report_image_id": "",
+                    "alert_address": {"location_near_by_report": "", "street": "", "city": ""},
+                    "thumbs_up_count": 0, "current_user_thumbed_up": False, "seconds_to_report": -1,
+                    "beepInfo": {}, "chatInfo": {"private": False}},
+                "alert_uuid": uuid}}
+
+    def live_elems(self, protos, user, now, lines=()):
+        """Handle report / thumbs-up commands. -> (list of reply elements, notes)."""
+        elems, notes = [], []
+        for p in protos:
+            for el in batch_elems(p):
+                c = cmd_of(el)
+                if c == 2737:
+                    rep = self.parse_report(el)
+                    rs = self.reports()
+                    rid = max([r["alert"]["realtime_alert"]["id"] for r in rs] + [2_000_000]) + 1
+                    uuid = "00000000-0000-4000-9000-%012d" % rid
+                    who = user["name"] if user else "Wazer"
+                    rs.append({"alert": self.report_to_alert(rep, rid, uuid, who, now), "created": now, "reporter": who})
+                    self._save_reports(rs)
+                    pts = 10
+                    if user:
+                        auth.set_field(user["name"], "points", int(auth.get_user(user["name"]).get("points", 500000)) + pts)
+                    detail = {rep["detail"]: {"type": rep["enum"][1]}} if rep["detail"] and rep["enum"] else {}
+                    try:
+                        e = self._enc("add_user_reported_alert_response", {"status": {"code": "OK"}, "received_points_count": pts,
+                                      "client_alert_id": rid, "alert_details": detail, "alert_uuid": uuid})
+                    except Exception:
+                        e = None
+                    if e is None:
+                        e = self._enc("add_user_reported_alert_response", {"status": {"code": "OK"}, "received_points_count": pts,
+                                      "client_alert_id": rid, "alert_uuid": uuid})
+                    elems.append(e)
+                    notes.append(f"report {rep['detail']}/{rep['enum'][1] if rep['enum'] else '?'} id={rid} by {who}")
+                    log(f"REPORT stored: {rep['detail']} {rep['enum']} at {rep['lon']/1e6:.5f},{rep['lat']/1e6:.5f} by {who}")
+                elif c == 2633:
+                    aid, uuid = None, None
+                    for n, w, v in D.parse_wire(D.parse_wire(el)[0][2]):
+                        if n == 1 and w == 0: aid = v
+                        if n == 2 and w == 2: uuid = v.decode("utf-8", "replace")
+                    self.thumb(aid, uuid)
+                    elems.append(self._enc("report_thumbs_up_response", {"received_points": 5}))
+                    notes.append(f"thumbs up {aid}")
+        for l in lines:
+            if l.startswith("ThumbsUp,"):
+                try:
+                    self.thumb(int(l.split(",")[1]), None)
+                    notes.append("thumbs up (legacy)")
+                except ValueError:
+                    pass
+        return [e for e in elems if e is not None], notes
+
+    def thumb(self, aid, uuid):
+        rs, hit = self.reports(), False
+        for r in rs:
+            ra = r["alert"]["realtime_alert"]
+            if ra["id"] == aid or (uuid and ra["alert_uuid"] == uuid):
+                ra["alert_reporting_info"]["thumbs_up_count"] += 1
+                hit = True
+        if hit:
+            self._save_reports(rs)
 
     # ----- accounts: who is asking, profile, signup -----
 
@@ -722,10 +899,11 @@ class Server:
         rec = auth.get_user(user["name"]) or {}
         return self._enc("my_profile", {
             "basic_info": {"email": rec.get("email", ""), "email_verified": bool(rec.get("email")),
-                           "join_date_sec": int(rec.get("created", time.time())), "points": int(rec.get("points", 0)),
+                           "join_date_sec": int(rec.get("created", time.time())), "points": int(rec.get("points", 500000)),
                            "last_login_sec": int(time.time()), "public_user_name": user["name"],
                            "anonymous": False, "is_registered": True, "is_aadc_restricted": False,
-                           "is_u18_restricted": False, "addon": 0, "is_u16_restricted": False},
+                           "is_u18_restricted": False, "addon": 0, "is_u16_restricted": False,
+                           "exclusive_moods_level": rec.get("exclusive_moods", "GOLD")},
             "social_info": {"gender": "UNDEFINED"},
             "favorites_info": {"num_favorites": 0},
             "user_id": user["uid"], "completed_percent": 100,
@@ -792,9 +970,25 @@ class Server:
             rq = ",".join(self._ext_name(c) or str(c) for c in sorted(
                 {cmd_of(e) for p in protos for e in batch_elems(p)} - {2001}))
             if any(cmd_of(e) == 2499 for p in protos for e in batch_elems(p)):
-                ue, note = self.update_fields(protos, user)
+                try:
+                    ue, note = self.update_fields(protos, user)
+                except (ValueError, KeyError, IndexError):
+                    ue, note = self._enc("update_user_fields_response", {"status": {"code": "ERROR"}}), "update fields malformed"
                 st = self._stamp(now)
                 return make_batch(([st] if st else []) + ([ue] if ue else []) + self._envelope()), note, self._base_tpl()
+            try:
+                live, live_notes = self.live_elems(protos, user, now, lines)
+            except (ValueError, KeyError, IndexError, TypeError) as ex:
+                live, live_notes = [], []
+                log(f"live command malformed ({type(ex).__name__}: {ex}); answered with an empty batch")
+                if {cmd_of(e) for p in protos for e in batch_elems(p)} <= self.LIVE_CMDS | {2001, 2184}:
+                    st = self._stamp(now)
+                    return make_batch(([st] if st else []) + self._envelope()), "live: malformed", self._base_tpl()
+            if live:
+                st = self._stamp(now)
+                log("live: " + "; ".join(live_notes))
+                if {cmd_of(e) for p in protos for e in batch_elems(p)} <= self.LIVE_CMDS | {2001, 2184}:
+                    return make_batch(([st] if st else []) + live + self._envelope()), "live: " + "; ".join(live_notes), self._base_tpl()
             mp = self.marketplace(protos, now)
             if mp is not None:
                 els, note = mp
@@ -1109,11 +1303,21 @@ def request(flow):
             log(f"PASS {flow.request.method} {host}{flow.request.path.split('?')[0]}")
         if "rtserver" in url:
             where = save_unseen(url.rstrip("/").rsplit("/", 1)[-1], flow.request.content or b"")
-            if os.environ.get("PSERVER_STRICT"):
-                flow.response = http.Response.make(404, b"", {})
-                log(f"blocked {url} (body saved to {where})")
-            else:
+            if os.environ.get("PSERVER_PASSTHROUGH"):
                 log(f"PASSING THROUGH to real Waze: {url} (body saved to {where})")
+            else:                                  # default: every rtserver path is answered here with a valid empty batch
+                try:
+                    _SRV = _SRV or Server()
+                    st = _SRV._stamp(time.time())
+                    hdr, gz = _SRV.resp_headers(_SRV._base_tpl())
+                    r = http.Response.make(200, make_batch(([st] if st else []) + _SRV._envelope()), hdr)
+                    if gz:
+                        r.encode("gzip")
+                    flow.response = r
+                    log(f"unknown rtserver path {url.split('?')[0]} answered with an empty batch (body saved to {where})")
+                except Exception as ex:
+                    flow.response = http.Response.make(200, b"", {})
+                    log(f"unknown rtserver path answered empty ({type(ex).__name__}: {ex})")
         return
     try:
         _SRV = _SRV or Server()

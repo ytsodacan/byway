@@ -1,0 +1,12 @@
+services:
+  byway:
+    build: .
+    restart: unless-stopped
+    ports: ["8080:8080"]
+    environment:
+      BYWAY_PROXYAUTH: "${BYWAY_PROXYAUTH:-}"   # e.g. me:longrandomsecret
+    volumes:
+      - ./data:/data              # capture/, protos/, private/ (accounts, reports, world)
+      - mitm:/root/.mitmproxy     # the CA certificate your phone trusts
+volumes:
+  mitm:
