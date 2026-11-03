@@ -23,5 +23,5 @@ trap 'exit 130' INT TERM
 
 networksetup -setwebproxy "$SERVICE" 127.0.0.1 8080
 networksetup -setsecurewebproxy "$SERVICE" 127.0.0.1 8080
-echo "proxy on for '$SERVICE'. Open Waze now. Press Ctrl-C here when done."
+echo "proxy on for '$SERVICE'. Open Waze now. Dashboard: http://127.0.0.1:${BYWAY_DASH_PORT:-8081}  Press Ctrl-C here when done."
 "$BIN/mitmdump" -s pserver.py --listen-host 127.0.0.1 --allow-hosts 'waze\.com'

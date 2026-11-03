@@ -5,5 +5,7 @@ data/
 world*.json
 users.json
 sessions.json
+reports.json
+dashboard_password
 unseen/
 waze_capture*/

@@ -24,7 +24,7 @@ import sys
 import threading
 import time
 
-DIR = pathlib.Path.home() / "waze_private"
+DIR = (pathlib.Path(os.environ["BYWAY_HOME"]) / "private") if os.environ.get("BYWAY_HOME") else pathlib.Path.home() / "waze_private"
 USERS, SESSIONS = DIR / "users.json", DIR / "sessions.json"
 NAME_RE = re.compile(r"^[A-Za-z0-9_.-]{3,32}$")
 MAX_FAILS, WINDOW, TTL = 5, 600, 30 * 86400
@@ -66,6 +66,30 @@ def add_user(name, pw):
         users[name] = {"uid": uid, "salt": salt.hex(), "hash": _kdf(pw, salt).hex(), "created": int(time.time())}
         _save(USERS, users)
     return uid
+
+
+def list_users():
+    return _load(USERS)
+
+
+def set_fields(name, **kw):
+    """Admin edit: points, mood, exclusive_moods, banned, email."""
+    with _lock:
+        users = _load(USERS)
+        if name not in users:
+            raise ValueError("no such account")
+        users[name].update(kw)
+        _save(USERS, users)
+
+
+def remove_user(name):
+    with _lock:
+        users = _load(USERS)
+        if users.pop(name, None) is None:
+            raise ValueError("no such account")
+        _save(USERS, users)
+        sess = {k: v for k, v in _load(SESSIONS).items() if v["name"] != name}
+        _save(SESSIONS, sess)
 
 
 def get_user(name):
@@ -126,7 +150,7 @@ def verify(name, pw, now=None):
         u = _load(USERS).get(name)
     salt = bytes.fromhex(u["salt"]) if u else b"\0" * 16
     got = _kdf(pw, salt)
-    ok = bool(u) and hmac.compare_digest(got, bytes.fromhex(u["hash"])) and not locked
+    ok = bool(u) and hmac.compare_digest(got, bytes.fromhex(u["hash"])) and not locked and not u.get("banned")
     if not ok:
         with _lock:
             _fails[name].append(now)

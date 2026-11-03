@@ -8,6 +8,7 @@ Schema names only (no captured data), so it is safe to paste.
 """
 import pathlib, sys
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "server"))
 import pserver as S
 D = S.D
 

@@ -1,0 +1,305 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Byway</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
+<style>
+:root{--bg:#f5f6f8;--panel:#fff;--panel2:#f0f2f5;--line:#e2e5ea;--text:#171a1f;--mute:#667085;--accent:#1d9bf0;--accent-t:#fff;--good:#12a05c;--bad:#d92d20;--warn:#d98a00;--shadow:0 1px 2px rgba(16,24,40,.06)}
+@media (prefers-color-scheme:dark){:root:not([data-theme=light]){--bg:#0e1116;--panel:#161b22;--panel2:#1c232c;--line:#2a323d;--text:#e6e9ee;--mute:#8b95a5;--accent:#4cb4ff;--accent-t:#06121c;--good:#3ccf8e;--bad:#ff6b5e;--warn:#f0b429;--shadow:none}}
+:root[data-theme=dark]{--bg:#0e1116;--panel:#161b22;--panel2:#1c232c;--line:#2a323d;--text:#e6e9ee;--mute:#8b95a5;--accent:#4cb4ff;--accent-t:#06121c;--good:#3ccf8e;--bad:#ff6b5e;--warn:#f0b429;--shadow:none}
+*{box-sizing:border-box}
+html,body{margin:0;height:100%}
+body{background:var(--bg);color:var(--text);font:14px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",Inter,Roboto,sans-serif}
+button,input,select{font:inherit;color:inherit}
+.app{display:grid;grid-template-columns:220px 1fr;height:100vh}
+nav{background:var(--panel);border-right:1px solid var(--line);padding:16px 12px;display:flex;flex-direction:column;gap:2px}
+.brand{display:flex;align-items:center;gap:10px;font-weight:700;font-size:17px;padding:4px 10px 16px}
+.brand i{width:26px;height:26px;border-radius:8px;background:linear-gradient(135deg,var(--accent),#7c5cff);display:inline-block}
+nav a{display:flex;align-items:center;gap:10px;padding:9px 10px;border-radius:8px;color:var(--mute);cursor:pointer;text-decoration:none;font-weight:500}
+nav a:hover{background:var(--panel2);color:var(--text)}
+nav a.on{background:var(--panel2);color:var(--text)}
+nav a .dot{width:6px;height:6px;border-radius:50%;background:var(--mute)}
+nav a.on .dot{background:var(--accent)}
+nav .grow{flex:1}
+nav .foot{font-size:12px;color:var(--mute);padding:8px 10px}
+main{overflow:auto;padding:24px 28px 40px}
+h1{font-size:20px;margin:0 0 4px}
+.sub{color:var(--mute);margin-bottom:20px}
+.grid{display:grid;gap:14px}
+.cards{grid-template-columns:repeat(auto-fit,minmax(150px,1fr))}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:14px 16px;box-shadow:var(--shadow)}
+.card .k{color:var(--mute);font-size:12px;text-transform:uppercase;letter-spacing:.04em}
+.card .v{font-size:26px;font-weight:700;margin-top:2px;font-variant-numeric:tabular-nums}
+.card .s{font-size:12px;color:var(--mute)}
+.panel{background:var(--panel);border:1px solid var(--line);border-radius:12px;box-shadow:var(--shadow)}
+.panel>h2{margin:0;padding:12px 16px;font-size:13px;border-bottom:1px solid var(--line);display:flex;align-items:center;gap:8px}
+.panel>h2 .r{margin-left:auto;display:flex;gap:8px;align-items:center;font-weight:400}
+.pad{padding:14px 16px}
+.two{grid-template-columns:2fr 1fr}
+@media(max-width:900px){.app{grid-template-columns:1fr;grid-template-rows:auto 1fr}nav{flex-direction:row;overflow-x:auto;border-right:0;border-bottom:1px solid var(--line);padding:8px}.brand,.foot,nav .grow{display:none}nav a{white-space:nowrap}.two{grid-template-columns:1fr}main{padding:16px}}
+table{width:100%;border-collapse:collapse}
+th,td{text-align:left;padding:9px 14px;border-bottom:1px solid var(--line);white-space:nowrap}
+th{font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:var(--mute);font-weight:600;background:var(--panel2)}
+tr:last-child td{border-bottom:0}
+td.wrap{white-space:normal;word-break:break-word}
+.scroll{overflow:auto;max-height:calc(100vh - 230px)}
+.btn{background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:6px 12px;cursor:pointer;font-weight:500}
+.btn:hover{border-color:var(--mute)}
+.btn.pri{background:var(--accent);color:var(--accent-t);border-color:var(--accent)}
+.btn.bad{color:var(--bad)}
+.btn.sm{padding:3px 9px;font-size:12px}
+input,select{background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:7px 10px;min-width:0}
+input:focus,select:focus,.btn:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+label{display:flex;flex-direction:column;gap:4px;font-size:12px;color:var(--mute)}
+.form{display:flex;flex-wrap:wrap;gap:10px;align-items:flex-end}
+.pill{display:inline-block;padding:1px 8px;border-radius:99px;font-size:11px;font-weight:600;background:var(--panel2);border:1px solid var(--line)}
+.pill.good{color:var(--good)}.pill.bad{color:var(--bad)}.pill.warn{color:var(--warn)}
+.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px}
+.mute{color:var(--mute)}
+#map{height:calc(100vh - 150px);min-height:420px;border-radius:12px;border:1px solid var(--line)}
+.bars{display:flex;align-items:flex-end;gap:2px;height:110px}
+.bars div{flex:1;background:var(--accent);opacity:.85;border-radius:2px 2px 0 0;min-height:2px}
+.bars div:hover{opacity:1}
+.row{display:flex;align-items:center;gap:10px;padding:6px 0}
+.row .bar{flex:1;height:6px;border-radius:3px;background:var(--panel2);overflow:hidden}
+.row .bar i{display:block;height:100%;background:var(--accent)}
+.row .n{width:48px;text-align:right;color:var(--mute);font-variant-numeric:tabular-nums}
+.login{position:fixed;inset:0;background:var(--bg);display:flex;align-items:center;justify-content:center;z-index:9999}
+.login .box{width:min(360px,90vw)}
+.modal{position:fixed;inset:0;background:rgba(0,0,0,.5);display:flex;align-items:center;justify-content:center;z-index:5000}
+.modal .box{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:20px;width:min(440px,92vw)}
+.toast{position:fixed;bottom:20px;right:20px;background:var(--text);color:var(--bg);padding:10px 16px;border-radius:10px;z-index:99999;box-shadow:0 8px 24px rgba(0,0,0,.25)}
+.hidden{display:none!important}
+.err{color:var(--bad);min-height:20px;margin-top:8px}
+.live{width:8px;height:8px;border-radius:50%;background:var(--good);display:inline-block;animation:p 2s infinite}
+@keyframes p{50%{opacity:.3}}
+</style>
+</head>
+<body>
+<div id="login" class="login hidden">
+  <form class="box panel pad" id="loginForm">
+    <div class="brand" style="padding:0 0 14px"><i></i>Byway</div>
+    <label>Dashboard password<input type="password" id="pw" autocomplete="current-password" autofocus></label>
+    <button class="btn pri" style="width:100%;margin-top:12px">Sign in</button>
+    <div class="err" id="loginErr"></div>
+  </form>
+</div>
+
+<div class="app">
+  <nav id="nav">
+    <div class="brand"><i></i>Byway</div>
+    <a data-tab="overview"><span class="dot"></span>Overview</a>
+    <a data-tab="map"><span class="dot"></span>Map</a>
+    <a data-tab="accounts"><span class="dot"></span>Accounts</a>
+    <a data-tab="reports"><span class="dot"></span>Reports</a>
+    <a data-tab="world"><span class="dot"></span>World</a>
+    <a data-tab="traffic"><span class="dot"></span>Traffic</a>
+    <a data-tab="logs"><span class="dot"></span>Logs</a>
+    <div class="grow"></div>
+    <div class="foot"><a style="padding:0" id="theme">Toggle theme</a><br><a style="padding:0" id="logout">Sign out</a></div>
+  </nav>
+  <main id="main"></main>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<script>
+const $ = (s, r = document) => r.querySelector(s);
+function h(tag, attrs, ...kids) {
+  const e = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs || {})) {
+    if (k === 'class') e.className = v; else if (k.startsWith('on')) e.addEventListener(k.slice(2), v);
+    else if (v === true) e.setAttribute(k, ''); else if (v !== false && v != null) e.setAttribute(k, v);
+  }
+  for (const k of kids.flat()) if (k != null && k !== false) e.append(k.nodeType ? k : document.createTextNode(k));
+  return e;
+}
+const fmtN = n => Number(n).toLocaleString();
+const fmtDur = s => { s = Math.floor(s); const d = Math.floor(s / 86400), hh = Math.floor(s % 86400 / 3600), m = Math.floor(s % 3600 / 60); return d ? `${d}d ${hh}h` : hh ? `${hh}h ${m}m` : `${m}m ${s % 60}s`; };
+const ago = t => t ? fmtDur(Date.now() / 1000 - t) + ' ago' : '—';
+const clock = t => new Date(t * 1000).toLocaleTimeString();
+function toast(msg) { const t = h('div', { class: 'toast' }, msg); document.body.append(t); setTimeout(() => t.remove(), 2800); }
+
+async function api(path, method = 'GET', body) {
+  const r = await fetch('/api/' + path, { method, headers: body ? { 'Content-Type': 'application/json' } : {}, body: body ? JSON.stringify(body) : undefined });
+  if (r.status === 401) { showLogin(); throw new Error('login required'); }
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) { toast(j.error || r.statusText); throw new Error(j.error || r.statusText); }
+  return j;
+}
+
+// ---- login / theme
+function showLogin() { $('#login').classList.remove('hidden'); $('#pw').focus(); stopTimers(); }
+$('#loginForm').addEventListener('submit', async e => {
+  e.preventDefault();
+  const r = await fetch('/api/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ password: $('#pw').value }) });
+  if (r.ok) { $('#login').classList.add('hidden'); $('#pw').value = ''; $('#loginErr').textContent = ''; go(tab); }
+  else $('#loginErr').textContent = (await r.json().catch(() => ({}))).error || 'failed';
+});
+$('#logout').onclick = () => { document.cookie = 'byway_dash=; Max-Age=0; Path=/'; showLogin(); };
+$('#theme').onclick = () => {
+  const r = document.documentElement, dark = getComputedStyle(r).getPropertyValue('--bg').trim() === '#0e1116';
+  r.dataset.theme = dark ? 'light' : 'dark'; try { localStorage.setItem('theme', r.dataset.theme); } catch (e) {}
+};
+try { const t = localStorage.getItem('theme'); if (t) document.documentElement.dataset.theme = t; } catch (e) {}
+
+// ---- tabs
+let tab = 'overview', timers = [], map = null;
+function stopTimers() { timers.forEach(clearInterval); timers = []; }
+function every(ms, fn) { fn(); timers.push(setInterval(() => { if (!document.hidden) fn().catch?.(() => {}); }, ms)); }
+async function go(name) {
+  tab = name; stopTimers(); map && (map.remove(), map = null);
+  document.querySelectorAll('#nav a[data-tab]').forEach(a => a.classList.toggle('on', a.dataset.tab === name));
+  try { location.hash = name; } catch (e) {}
+  const m = $('#main'); m.replaceChildren();
+  await views[name](m);
+}
+document.querySelectorAll('#nav a[data-tab]').forEach(a => a.onclick = () => go(a.dataset.tab));
+
+function head(title, sub, ...right) { return h('div', { style: 'display:flex;align-items:flex-end;gap:12px;margin-bottom:18px;flex-wrap:wrap' }, h('div', {}, h('h1', {}, title), h('div', { class: 'sub', style: 'margin:0' }, sub)), h('div', { style: 'margin-left:auto;display:flex;gap:8px' }, right)); }
+function card(k, v, s) { return h('div', { class: 'card' }, h('div', { class: 'k' }, k), h('div', { class: 'v' }, v), s != null && h('div', { class: 's' }, s)); }
+function field(label, input) { return h('label', {}, label, input); }
+function confirmBox(text, ok) { if (confirm(text)) ok(); }
+
+const views = {
+  async overview(m) {
+    const cards = h('div', { class: 'grid cards' }), chart = h('div', { class: 'bars' }), top = h('div'), online = h('div');
+    m.append(head('Overview', 'Live server state', h('span', { class: 'mute' }, h('span', { class: 'live' }), ' updating')), cards,
+      h('div', { class: 'grid two', style: 'margin-top:14px' },
+        h('div', { class: 'panel' }, h('h2', {}, 'Requests per minute (last hour)'), h('div', { class: 'pad' }, chart)),
+        h('div', { class: 'panel' }, h('h2', {}, 'Players online'), h('div', { class: 'pad' }, online))),
+      h('div', { class: 'panel', style: 'margin-top:14px' }, h('h2', {}, 'Most used commands'), h('div', { class: 'pad' }, top)));
+    every(3000, async () => {
+      const o = await api('overview');
+      cards.replaceChildren(card('Uptime', fmtDur(o.uptime)), card('Requests', fmtN(o.requests), `${o.errors} errors`),
+        card('Accounts', fmtN(o.accounts), `${o.online.length} online`), card('Live reports', fmtN(o.reports), `expire after ${fmtDur(o.caps.report_ttl)}`),
+        card('World', `${fmtN(o.world.wazers)} / ${fmtN(o.world.alerts)}`, 'wazers / alerts'), card('Templates', o.templates, 'captured command shapes'));
+      const mx = Math.max(1, ...o.series);
+      chart.replaceChildren(...o.series.map((v, i) => h('div', { style: `height:${Math.max(2, v / mx * 100)}%`, title: `${v} req · ${60 - i - 1} min ago` })));
+      const tm = Math.max(1, ...o.top_commands.map(c => c[1]));
+      top.replaceChildren(...o.top_commands.map(([n, c]) => h('div', { class: 'row' }, h('span', { class: 'mono', style: 'width:230px;overflow:hidden;text-overflow:ellipsis' }, n), h('div', { class: 'bar' }, h('i', { style: `width:${c / tm * 100}%` })), h('span', { class: 'n' }, fmtN(c)))));
+      if (!o.top_commands.length) top.replaceChildren(h('span', { class: 'mute' }, 'No traffic yet.'));
+      online.replaceChildren(...(o.online.length ? o.online.map(n => h('div', { class: 'row' }, h('span', { class: 'live' }), n)) : [h('span', { class: 'mute' }, 'Nobody connected. Open Waze on a phone using this server.')]));
+    });
+  },
+
+  async map(m) {
+    const kinds = (await api('kinds')).kinds;
+    m.append(head('Map', 'Click anywhere to drop a report. Players, reports and a sample of the synthetic world are shown.'), h('div', { id: 'map' }));
+    map = L.map('map', { preferCanvas: true }).setView([0, 0], 2);
+    L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19, attribution: '© OpenStreetMap' }).addTo(map);
+    const layers = { world: L.layerGroup().addTo(map), reports: L.layerGroup().addTo(map), players: L.layerGroup().addTo(map) };
+    L.control.layers(null, { 'World sample': layers.world, Reports: layers.reports, Players: layers.players }).addTo(map);
+    let fitted = false;
+    map.on('click', e => {
+      const sel = h('select', {}, kinds.map(k => h('option', {}, k)));
+      const box = h('div', {}, h('div', { class: 'mono', style: 'margin-bottom:6px' }, `${e.latlng.lat.toFixed(5)}, ${e.latlng.lng.toFixed(5)}`), sel,
+        h('button', { class: 'btn pri sm', style: 'margin-left:6px', onclick: async () => { await api('reports', 'POST', { lat: e.latlng.lat, lon: e.latlng.lng, kind: sel.value }); map.closePopup(); toast('Report added'); refresh(); } }, 'Add report'));
+      L.popup().setLatLng(e.latlng).setContent(box).openOn(map);
+    });
+    async function refresh() {
+      const d = await api('map'); Object.values(layers).forEach(l => l.clearLayers());
+      const pts = [];
+      d.wazers.forEach(([x, y]) => { L.circleMarker([y, x], { radius: 3, color: '#7c5cff', weight: 0, fillOpacity: .6 }).addTo(layers.world); pts.push([y, x]); });
+      d.alerts.forEach(([x, y, t]) => L.circleMarker([y, x], { radius: 4, color: '#f0b429', weight: 0, fillOpacity: .7 }).bindTooltip(t).addTo(layers.world));
+      d.reports.forEach(r => { L.circleMarker([r.lat, r.lon], { radius: 8, color: '#ff6b5e', fillOpacity: .9, weight: 2 }).bindPopup(h('div', {}, h('b', {}, r.sub_type), h('div', { class: 'mute' }, `by ${r.by} · ${ago(r.created)} · 👍 ${r.thumbs}`), h('button', { class: 'btn bad sm', onclick: async () => { await api('reports/' + r.id, 'DELETE'); refresh(); } }, 'Delete'))).addTo(layers.reports); pts.push([r.lat, r.lon]); });
+      d.players.forEach(p => { L.circleMarker([p.lat, p.lon], { radius: 9, color: '#3ccf8e', fillOpacity: .9, weight: 3 }).bindTooltip(p.name, { permanent: true, direction: 'top' }).addTo(layers.players); pts.unshift([p.lat, p.lon]); });
+      if (!fitted && pts.length) { map.fitBounds(L.latLngBounds(pts.slice(0, 300)).pad(.2), { maxZoom: 14 }); fitted = true; }
+    }
+    every(5000, refresh);
+  },
+
+  async accounts(m) {
+    const body = h('tbody'), nm = h('input', { placeholder: 'name', minlength: 3 }), pw = h('input', { type: 'password', placeholder: 'password (8+)' });
+    m.append(head('Accounts', 'Everyone who can sign in to this server'),
+      h('div', { class: 'panel pad', style: 'margin-bottom:14px' }, h('div', { class: 'form' }, field('Name', nm), field('Password', pw),
+        h('button', { class: 'btn pri', onclick: async () => { await api('users', 'POST', { name: nm.value, password: pw.value }); nm.value = pw.value = ''; toast('Account created'); load(); } }, 'Create account'))),
+      h('div', { class: 'panel' }, h('div', { class: 'scroll' }, h('table', {}, h('thead', {}, h('tr', {}, ['Name', 'ID', 'Status', 'Points', 'Mood', 'Exclusive', 'Created', ''].map(x => h('th', {}, x)))), body))));
+    function edit(u) {
+      const f = { points: h('input', { type: 'number', value: u.points }), mood: h('input', { type: 'number', value: u.mood }), email: h('input', { value: u.email }),
+        ex: h('select', {}, ['NONE', 'BRONZE', 'SILVER', 'GOLD'].map(x => h('option', { selected: x === u.exclusive_moods }, x))), pw: h('input', { type: 'password', placeholder: 'leave empty to keep' }) };
+      const ban = h('input', { type: 'checkbox', checked: u.banned });
+      const modal = h('div', { class: 'modal', onclick: e => e.target === modal && modal.remove() }, h('div', { class: 'box grid' }, h('h2', { style: 'margin:0' }, u.name),
+        field('Points', f.points), field('Mood id', f.mood), field('Exclusive moods level', f.ex), field('Email', f.email), field('New password', f.pw),
+        h('label', { style: 'flex-direction:row;align-items:center;gap:8px' }, ban, 'Banned (cannot sign in)'),
+        h('div', { class: 'form', style: 'justify-content:flex-end' }, h('button', { class: 'btn', onclick: () => modal.remove() }, 'Cancel'),
+          h('button', { class: 'btn pri', onclick: async () => { await api('users/' + encodeURIComponent(u.name), 'POST', { points: f.points.value, mood: f.mood.value, exclusive_moods: f.ex.value, email: f.email.value, banned: ban.checked, password: f.pw.value }); modal.remove(); toast('Saved'); load(); } }, 'Save'))));
+      document.body.append(modal);
+    }
+    async function load() {
+      const us = (await api('users')).users.sort((a, b) => (b.online - a.online) || a.uid - b.uid);
+      body.replaceChildren(...us.map(u => h('tr', {}, h('td', {}, u.name), h('td', { class: 'mono' }, u.uid),
+        h('td', {}, u.banned ? h('span', { class: 'pill bad' }, 'banned') : u.online ? h('span', { class: 'pill good' }, 'online') : h('span', { class: 'mute' }, u.last_seen ? ago(u.last_seen) : 'offline')),
+        h('td', {}, fmtN(u.points)), h('td', {}, u.mood), h('td', {}, u.exclusive_moods), h('td', { class: 'mute' }, u.created ? new Date(u.created * 1000).toLocaleDateString() : ''),
+        h('td', { style: 'text-align:right' }, h('button', { class: 'btn sm', onclick: () => edit(u) }, 'Edit'), ' ',
+          h('button', { class: 'btn bad sm', onclick: () => confirmBox(`Delete ${u.name}?`, async () => { await api('users/' + encodeURIComponent(u.name), 'DELETE'); load(); }) }, 'Delete')))));
+      if (!us.length) body.replaceChildren(h('tr', {}, h('td', { colspan: 8, class: 'mute' }, 'No accounts yet. Tap "Get started" in the app, or create one above.')));
+    }
+    every(5000, load);
+  },
+
+  async reports(m) {
+    const kinds = (await api('kinds')).kinds, body = h('tbody');
+    const kind = h('select', {}, kinds.map(k => h('option', {}, k))), lat = h('input', { type: 'number', step: 'any', placeholder: 'lat' }), lon = h('input', { type: 'number', step: 'any', placeholder: 'lon' });
+    m.append(head('Reports', 'Live reports from drivers and the dashboard', h('button', { class: 'btn bad', onclick: () => confirmBox('Delete all live reports?', async () => { await api('reports/all', 'DELETE'); load(); }) }, 'Clear all')),
+      h('div', { class: 'panel pad', style: 'margin-bottom:14px' }, h('div', { class: 'form' }, field('Type', kind), field('Latitude', lat), field('Longitude', lon),
+        h('button', { class: 'btn pri', onclick: async () => { await api('reports', 'POST', { kind: kind.value, lat: lat.value, lon: lon.value }); toast('Report added'); load(); } }, 'Add report'))),
+      h('div', { class: 'panel' }, h('div', { class: 'scroll' }, h('table', {}, h('thead', {}, h('tr', {}, ['ID', 'Type', 'Reporter', 'Where', 'Age', 'Expires', '👍', ''].map(x => h('th', {}, x)))), body))));
+    async function load() {
+      const rs = (await api('reports')).reports.sort((a, b) => b.created - a.created);
+      body.replaceChildren(...rs.map(r => h('tr', {}, h('td', { class: 'mono' }, r.id), h('td', {}, r.sub_type.replaceAll('_', ' ').toLowerCase()), h('td', {}, r.by),
+        h('td', { class: 'mono' }, `${r.lat.toFixed(4)}, ${r.lon.toFixed(4)}`), h('td', {}, ago(r.created)), h('td', { class: 'mute' }, 'in ' + fmtDur(r.expires - Date.now() / 1000)), h('td', {}, r.thumbs),
+        h('td', { style: 'text-align:right' }, h('button', { class: 'btn bad sm', onclick: async () => { await api('reports/' + r.id, 'DELETE'); load(); } }, 'Delete')))));
+      if (!rs.length) body.replaceChildren(h('tr', {}, h('td', { colspan: 8, class: 'mute' }, 'No live reports.')));
+    }
+    every(4000, load);
+  },
+
+  async world(m) {
+    const o = await api('overview');
+    const i = (v, a = {}) => h('input', { value: v, ...a });
+    const f = { lon: i('151.0', { type: 'number', step: 'any' }), lat: i('-33.8', { type: 'number', step: 'any' }), radius: i(8, { type: 'number' }), wazers: i(200, { type: 'number' }), alerts: i(300, { type: 'number' }) };
+    const caps = { wazers: i(o.caps.wazers, { type: 'number' }), alerts: i(o.caps.alerts, { type: 'number' }), ttl: i(o.caps.report_ttl, { type: 'number' }) };
+    m.append(head('World', `Currently ${fmtN(o.world.wazers)} wazers and ${fmtN(o.world.alerts)} alerts of synthetic traffic`),
+      h('div', { class: 'grid two' },
+        h('div', { class: 'panel' }, h('h2', {}, 'Generate synthetic traffic'), h('div', { class: 'pad' }, h('div', { class: 'form' },
+          field('Centre longitude', f.lon), field('Centre latitude', f.lat), field('Radius (km)', f.radius), field('Wazers', f.wazers), field('Alerts', f.alerts)),
+          h('div', { class: 'form', style: 'margin-top:14px' }, h('button', { class: 'btn pri', onclick: async () => { const r = await api('world/generate', 'POST', Object.fromEntries(Object.entries(f).map(([k, v]) => [k, v.value]))); toast(`Generated ${r.wazers} wazers, ${r.alerts} alerts`); go('world'); } }, 'Replace world'),
+            h('button', { class: 'btn bad', onclick: () => confirmBox('Remove all synthetic traffic?', async () => { await api('world/clear', 'POST', {}); go('world'); }) }, 'Clear world')),
+          h('p', { class: 'mute' }, 'Tip: use the Map tab to find coordinates; right now your phone is centred wherever its GPS says.'))),
+        h('div', { class: 'panel' }, h('h2', {}, 'Limits'), h('div', { class: 'pad grid' },
+          field('Max wazers per reply', caps.wazers), field('Max alerts per reply', caps.alerts), field('Report lifetime (seconds)', caps.ttl),
+          h('button', { class: 'btn pri', onclick: async () => { await api('config', 'POST', { wazers: caps.wazers.value, alerts: caps.alerts.value, report_ttl: caps.ttl.value }); toast('Saved (until restart)'); } }, 'Apply'),
+          h('p', { class: 'mute', style: 'margin:0' }, 'Smaller replies load faster on the phone.')))));
+  },
+
+  async traffic(m) {
+    const body = h('tbody'), filter = h('input', { placeholder: 'filter…' }); let since = 0, rows = [], paused = false;
+    const pause = h('button', { class: 'btn', onclick: () => { paused = !paused; pause.textContent = paused ? 'Resume' : 'Pause'; } }, 'Pause');
+    m.append(head('Traffic', 'Every request the app makes, newest first', filter, pause),
+      h('div', { class: 'panel' }, h('div', { class: 'scroll' }, h('table', {}, h('thead', {}, h('tr', {}, ['Time', 'Kind', 'User', 'ms', 'Size', 'What happened'].map(x => h('th', {}, x)))), body))));
+    function draw() { const q = filter.value.toLowerCase(); body.replaceChildren(...rows.filter(e => !q || (e.info + e.user + e.kind).toLowerCase().includes(q)).slice(0, 300).map(e => h('tr', {}, h('td', { class: 'mono mute' }, clock(e.t)), h('td', {}, h('span', { class: 'pill' }, e.kind)), h('td', {}, e.user || ''), h('td', { class: 'mono' }, e.ms), h('td', { class: 'mono' }, (e.size / 1024).toFixed(1) + ' KB'), h('td', { class: 'wrap mono' }, e.info)))); }
+    filter.oninput = draw;
+    every(2000, async () => { if (paused) return; const d = await api('requests?since=' + since); if (d.events.length) { since = d.events[d.events.length - 1].t; rows = d.events.reverse().concat(rows).slice(0, 600); draw(); } });
+  },
+
+  async logs(m) {
+    const log = h('pre', { class: 'mono pad', style: 'margin:0;white-space:pre-wrap;max-height:55vh;overflow:auto' }), un = h('tbody');
+    m.append(head('Logs', 'Server log and requests the server had no template for'),
+      h('div', { class: 'panel', style: 'margin-bottom:14px' }, h('h2', {}, 'Server log'), log),
+      h('div', { class: 'panel' }, h('h2', {}, 'Unseen requests (saved for analysis)'), h('div', { class: 'scroll' }, h('table', {}, h('thead', {}, h('tr', {}, ['File', 'Size', 'Shape (values masked)'].map(x => h('th', {}, x)))), un))));
+    every(4000, async () => {
+      const stick = log.scrollTop + log.clientHeight >= log.scrollHeight - 30; log.textContent = (await api('logs')).lines.join('\n'); if (stick) log.scrollTop = log.scrollHeight;
+      un.replaceChildren(...(await api('unseen')).unseen.map(u => h('tr', {}, h('td', { class: 'mono' }, u.file), h('td', {}, u.size), h('td', { class: 'wrap mono' }, u.shape))));
+    });
+  },
+};
+
+(async () => {
+  const t = (location.hash || '').slice(1); if (views[t]) tab = t;
+  try { await api('overview'); go(tab); } catch (e) {}
+})();
+</script>
+</body>
+</html>

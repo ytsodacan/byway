@@ -2,11 +2,14 @@ services:
   byway:
     build: .
     restart: unless-stopped
-    ports: ["8080:8080"]
+    ports:
+      - "8080:8080"      # the proxy your phone connects to
+      - "8081:8081"      # the admin dashboard
     environment:
-      BYWAY_PROXYAUTH: "${BYWAY_PROXYAUTH:-}"   # e.g. me:longrandomsecret
+      BYWAY_PROXYAUTH: "${BYWAY_PROXYAUTH:-}"           # e.g. me:long-random-secret (required on a public host)
+      BYWAY_DASH_PASSWORD: "${BYWAY_DASH_PASSWORD:-}"   # empty = generated, see data/private/dashboard_password
     volumes:
-      - ./data:/data              # capture/, protos/, private/ (accounts, reports, world)
-      - mitm:/root/.mitmproxy     # the CA certificate your phone trusts
+      - ./data:/data
+      - mitm:/root/.mitmproxy       # the CA certificate your phone trusts
 volumes:
   mitm:

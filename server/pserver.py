@@ -1,26 +1,17 @@
 #!/usr/bin/env python3
-"""Private Waze realtime server, stage 1: mitmproxy addon that answers
-rtserver/distrib/login and /command itself instead of forwarding to Waze.
+r"""Byway: a private Waze realtime server, run as a mitmproxy addon.
 
-How it answers
-  * Every captured request/response pair in ~/waze_capture is a template, keyed
-    by the request's "signature" (which legacy commands + which typed commands).
-  * A new request with a known signature gets that template's response, with
-    timestamps moved to "now".
-  * Real drivers (add_wazer 2004) and alerts (add_alert_action 2708) from the
-    capture are DROPPED and replaced by the entries in ~/waze_private/world.json
-    that fall inside the map area the app reports.
+    mitmdump -s pserver.py --allow-hosts 'waze\.com'     # serve (see ../README.md; ./start.sh does the Mac proxy setup)
+    python3 pserver.py --signatures                      # list the command shapes the capture can answer
+    python3 pserver.py --selftest                        # replay captured requests, compare to captured replies
+    python3 pserver.py --add-mood NAME                   # register a custom mood (experimental)
 
-    "Get started" in the app sends rtserver/distrib/static with an empty `register` command. This
-    server answers it by creating a guest account in auth.py's store (random name + password, hashed)
-    and returning it as register_successful, like Waze does. Startup syncs the capture has no template
-    for (favorites, preferences, token, gaming status) get best-effort replies; the log says which.
-
-    mitmdump -s ~/Downloads/pserver.py            # serve (PSERVER_STRICT=1 blocks unknown rtserver paths)
-    python3 pserver.py --init-world LON LAT       # write a synthetic world.json near you
-    python3 pserver.py --signatures               # list what the capture can answer
-    python3 pserver.py --init-marketplace         # sample custom cars: ~/waze_private/marketplace.json + files/
-    python3 pserver.py --selftest                 # replay captured requests, compare to captured replies
+What it answers
+  * login / command / static on rtserver/distrib/*: guest sign-up, named logins, profiles, reports,
+    thumbs-up, other players on the map, synthetic world traffic, and a valid reply for every command.
+  * Replies are built from the templates in your capture; timestamps are moved to "now".
+  * An admin dashboard (dashboard.py) is started alongside: see BYWAY_DASH_* in its docstring.
+Env: BYWAY_HOME (data root), PSERVER_MAX_WAZERS / PSERVER_MAX_ALERTS, PSERVER_REPORT_TTL, PSERVER_PASSTHROUGH.
 """
 import argparse
 import base64
@@ -65,7 +56,36 @@ PRIV = BH / "private" if BH else HOME / "waze_private"
 UNSEEN = PRIV / "unseen"
 
 
+class Stats:
+    """In-memory counters and ring buffers behind the dashboard."""
+    def __init__(self):
+        self.start = time.time()
+        self.events = collections.deque(maxlen=600)      # recent requests
+        self.logs = collections.deque(maxlen=1000)       # recent log lines
+        self.per_min = collections.Counter()             # minute bucket -> requests
+        self.cmds = collections.Counter()                # command name -> count
+        self.total = self.errors = 0
+        self.last_seen = {}                              # account name -> unix time
+
+    def record(self, kind, info, size, ms, user=None, status=200):
+        self.total += 1
+        if status >= 400 or info.startswith("ERROR"):
+            self.errors += 1
+        self.per_min[int(time.time() // 60)] += 1
+        m = re.search(r"req=\[([^\]]*)\]", info) or re.search(r"live: (.*)", info)
+        names = [n for n in (m.group(1).split(",") if m else []) if n] or [kind]
+        for n in names:
+            self.cmds[n.split(" ")[0]] += 1
+        if user:
+            self.last_seen[user] = time.time()
+        self.events.append({"t": time.time(), "kind": kind, "info": info[:300], "size": size, "ms": round(ms, 1), "user": user})
+
+
+STATS = Stats()
+
+
 def log(msg):
+    STATS.logs.append(f"{time.strftime('%H:%M:%S')} {msg}")
     print(f"[pserver] {msg}", file=sys.stderr, flush=True)
     try:
         PRIV.mkdir(parents=True, exist_ok=True)
@@ -634,7 +654,9 @@ class Server:
     MAX_WAZERS = int(os.environ.get("PSERVER_MAX_WAZERS", "300"))
     MAX_ALERTS = int(os.environ.get("PSERVER_MAX_ALERTS", "500"))
 
-    def _overlay(self, area, now):
+    ONLINE_TTL = 90
+
+    def _overlay(self, area, now, me=None):
         """Wazers/alerts inside the map area, nearest the centre first, capped so a reply stays small and fast.
         A bad entry (unknown enum value, missing field) is skipped and logged once; it never fails the request."""
         w, out = self.world(), {2004: [], 2708: []}
@@ -659,7 +681,25 @@ class Server:
             cache = self._enc_cache = {}
         bad = getattr(self, "_bad", set())
         self._bad = bad
-        for z in near(w.get("wazers", []), lambda z: z["gps_sample"]["position"], self.MAX_WAZERS):
+        # other signed-in players, live: whoever sent a Location/At in the last ONLINE_TTL seconds
+        players = []
+        for uid, o in list(getattr(self, "online", {}).items()):
+            if now - o["t"] > self.ONLINE_TTL:
+                self.online.pop(uid, None)
+            elif uid != me:
+                players.append({"mode": "DELETE_IF_NOT_UPDATE", "id": {"session_id": uid % 2_000_000_000, "user_id": uid},
+                                "mapName": o["name"],
+                                "gps_sample": {"position": {"lon_times_1000000": int(o["lon"] * 1e6), "lat_times_1000000": int(o["lat"] * 1e6)},
+                                               "azymuth": 0, "speed_millis_per_second": 0},
+                                "mood": o["mood"], "addon": "NONE", "rank": 1, "points": o["points"],
+                                "join_date_sec": o["joined"], "capabilities": 7, "can_ping": False, "can_private_message": False})
+        for z in players:
+            try:
+                out[2004].append(self.codec.encode(self.elem_type, {"add_wazer": z}))
+            except (KeyError, ValueError) as ex:
+                if str(ex) not in bad:
+                    bad.add(str(ex)); log(f"presence: cannot encode a player ({ex})")
+        for z in near(w.get("wazers", []), lambda z: z["gps_sample"]["position"], self.MAX_WAZERS - len(players)):
             key = ("z", id(z))
             if key not in cache:
                 try:
@@ -966,6 +1006,18 @@ class Server:
                         auth.set_field(user['name'], 'mood', int(l.split(',')[1]))
                     except (ValueError, IndexError):
                         pass
+            if user:
+                for l in lines:
+                    if l.startswith(("Location,", "At,")):
+                        try:
+                            _, x, y = l.split(",")[:3]
+                            rec = auth.get_user(user["name"]) or {}
+                            if not hasattr(self, "online"):
+                                self.online = {}
+                            self.online[user["uid"]] = dict(lon=float(x), lat=float(y), t=now, name=user["name"], mood=int(rec.get("mood", 1)),
+                                                            points=int(rec.get("points", 500000)) % 2_000_000_000, joined=int(rec.get("created", now)))
+                        except ValueError:
+                            pass
             sig = signature(lines, protos)
             rq = ",".join(self._ext_name(c) or str(c) for c in sorted(
                 {cmd_of(e) for p in protos for e in batch_elems(p)} - {2001}))
@@ -1008,7 +1060,7 @@ class Server:
         if area is not None:
             self.last_area = area
         want_world = kind == "command" and (has_loc or tpl_world)
-        ov = self._overlay(area or self.last_area, now) if want_world else {2004: [], 2708: []}
+        ov = self._overlay(area or self.last_area, now, user["uid"] if user else None) if want_world else {2004: [], 2708: []}
         elems, placed = [], set()
         for e in tpl["elems"]:
             c = cmd_of(e)
@@ -1190,74 +1242,6 @@ class Server:
         return h, gz
 
 
-# ---------- marketplace gallery injection (the "pick a sidekick" web page) ----------
-
-def inject_custom_gallery(raw):
-    """Add one custom card to the real gallery JSON. None = left alone (not JSON, or no categories)."""
-    try:
-        data = json.loads(raw)
-    except ValueError:
-        return None
-    cats = data.get("categories")
-    if not isinstance(cats, list):
-        return None
-    custom_card = {
-        "themeCard": {
-            "campaignId": "custom-1",
-            "title": "My Custom Sidekick",
-            "imageUrl": "https://cres.waze.com/private/red.png",
-        }
-    }
-    cats.insert(0, {"title": "Custom", "cards": [custom_card]})
-    data["categories"] = cats
-    return json.dumps(data).encode()
-
-
-def custom_theme_campaign(campaign_id):
-    """Fabricated 'theme-campaign' detail reply for one of our custom gallery cards, or None (not ours).
-    The character/voice/car/mood ids here are REAL ones captured from SpongeBob (8791): this only tests
-    whether our own detail page loads and applies correctly, reusing assets already known to work."""
-    if campaign_id != "custom-1":
-        return None
-    return {
-        "campaign": {
-            "id": "custom-1",
-            "name": "My Custom Sidekick",
-            "title": "My Custom Sidekick",
-            "subtitle": "A custom drive buddy.",
-            "description": "A custom sidekick bundle, for testing a private marketplace server.",
-            "mainImageUrl": "https://cres.waze.com/private/red.png",
-            "characters": [{
-                "characterId": "custom-char-1",
-                "characterName": "Custom",
-                "iconUrl": "https://cres.waze.com/private/red.png",
-                "voices": [{
-                    "voiceId": "16455",
-                    "title": "SpongeBob SquarePants",
-                    "iconUrl": "https://dexter.waze.com/8/6455/Voice/x3.png",
-                    "sampleAssetUrl": "https://dexter.waze.com/8/6455/Voice/voices/StartDrive/1.mp3",
-                    "locale": "en",
-                }],
-                "cars": [{
-                    "carId": "16454",
-                    "carName": "Patty Blaster",
-                    "title": "Patty Blaster",
-                    "iconUrl": "https://dexter.waze.com/3/6454/$car.carId/2D/x3.png",
-                }],
-                "moods": [{
-                    "moodId": "16453",
-                    "moodName": "MOOD_SPONGEBOB_EN_BRAVE",
-                    "title": "Brave",
-                    "iconUrl": "https://dexter.waze.com/4/6453/$mood.mood_id/x3_ui.png",
-                }],
-            }],
-            "shareTitle": "My Custom Sidekick",
-            "shareBody": "A custom sidekick bundle, for testing a private marketplace server.",
-        },
-        "status": "SUCCESS",
-    }
-
-
 # ---------- mitmproxy hooks ----------
 
 _SRV = None
@@ -1268,19 +1252,6 @@ def request(flow):
     if http is None or "waze" not in flow.request.pretty_host:
         return
     url = flow.request.pretty_url
-    if flow.request.path.startswith("/webviews/copilot-marketplace/api/theme-campaign/"):
-        cid = flow.request.path.rstrip("/").rsplit("/", 1)[-1]
-        custom = custom_theme_campaign(cid)
-        if custom is not None:
-            body = json.dumps(custom).encode()
-            flow.response = http.Response.make(200, body, {"Content-Type": "application/json"})
-            log(f"theme-campaign: answered {cid!r} with custom bundle (real Waze never asked)")
-            return
-    if flow.request.pretty_host == "www.waze.com" and (flow.request.path.startswith("/webviews/copilot-marketplace/api/")
-                                                       or flow.request.path.startswith("/api/config/CopilotWeb")):
-        for h in ("If-None-Match", "If-Modified-Since"):      # ask for a full copy, not a 304, so the body can be saved
-            flow.request.headers.pop(h, None)
-        flow.metadata["pserver_web"] = True
     if flow.request.path.startswith("/private/"):          # our own images for custom cars/moods
         name = urllib.parse.unquote(os.path.basename(flow.request.path.split("?")[0]))
         f = Server.FILES / name
@@ -1322,7 +1293,10 @@ def request(flow):
     try:
         _SRV = _SRV or Server()
         body = flow.request.content or b""
+        t0 = time.time()
         data, info, tpl = _SRV.handle_static(body) if kind == "static" else _SRV.handle(kind, body, headers=flow.request.headers)
+        who = _SRV.user_of(flow.request.headers) if kind == "command" else None
+        STATS.record(kind, info, len(data), (time.time() - t0) * 1000, who["name"] if who else None)
         hdr, gz = _SRV.resp_headers(tpl)
         r = http.Response.make(200, data, hdr)
         if gz:
@@ -1353,23 +1327,23 @@ def request(flow):
             flow.response = http.Response.make(500, b"private server error", {})
 
 
+def running():
+    """mitmproxy hook: bring the dashboard up with the server."""
+    try:
+        import dashboard
+        dashboard.start(lambda: server_instance())
+    except Exception as ex:
+        log(f"dashboard not started ({type(ex).__name__}: {ex})")
+
+
+def server_instance():
+    global _SRV
+    _SRV = _SRV or Server()
+    return _SRV
+
+
 def response(flow):
-    """Describe (and keep) what real Waze answered to the one request we let through."""
-    if http is not None and flow.metadata.get("pserver_web") and flow.response is not None and flow.response.status_code == 200:
-        path = flow.request.path.split("?")[0]
-        seg = path.rstrip("/").rsplit("/", 1)[-1] or "root"
-        raw = flow.response.content or b""
-        if path.endswith("/webviews/copilot-marketplace/api/gallery"):
-            patched = inject_custom_gallery(raw)
-            if patched is not None:
-                flow.response.content = patched          # mitmproxy re-encodes/re-lengths to match headers
-                raw = patched
-                log("gallery: injected custom card")
-            else:
-                log("gallery: could not parse reply, left unmodified")
-        where = save_unseen("web_" + re.sub(r"[^A-Za-z0-9_-]", "", seg)[:30], raw) if raw else "(empty)"
-        log(f"saved web reply {path} ({len(raw)} bytes) to {where}")
-        return
+    """Describe (and keep) what real Waze answered to the one request we let through (geo-server discovery)."""
     if http is None or not flow.metadata.get("pserver_geo") or flow.response is None or _SRV is None:
         return
     raw = flow.response.content or b""
@@ -1379,40 +1353,6 @@ def response(flow):
 
 
 # ---------- CLI ----------
-
-def init_world(lon, lat):
-    pos = lambda dx, dy: {"lon_times_1000000": int((lon + dx) * 1e6), "lat_times_1000000": int((lat + dy) * 1e6)}
-    wazers = [{
-        "mode": "DELETE_IF_NOT_UPDATE", "id": {"session_id": 900000 + i},
-        "gps_sample": {"position": pos(dx, dy), "azymuth": az, "speed_millis_per_second": 0},
-        "mood": 1, "addon": "NONE", "rank": 0, "points": 100 * i,
-        "join_date_sec": 1700000000, "capabilities": 7, "can_ping": False, "can_private_message": False,
-    } for i, (dx, dy, az) in enumerate([(0.004, 0.002, 90), (-0.006, 0.001, 180), (0.002, -0.005, 270)], 1)]
-    alerts = [{
-        "_age_sec": 600 * i,
-        "realtime_alert": {
-            "id": 990000 + i,
-            "alert_info": {
-                "type": "HAZARD", "sub_type": "HAZARD_ON_ROAD_POT_HOLE", "position": pos(dx, dy),
-                "segment_direction_id": {"from_node": 176677667, "to_node": 163356063},
-                "seg_direction": "FORWARDS", "azymuth": 90, "on_route": False, "priority": 1000,
-                "alert_details": {"hazard_on_road": {"type": "HAZARD_POTHOLE"}},
-            },
-            "alert_reporting_info": {
-                "primary_alert_id": -1, "kind": "PRIMARY", "report_time": 0,
-                "reporter_username": f"TestWazer{i}", "current_user_is_reporter": False,
-                "report_image_id": "",
-                "alert_address": {"location_near_by_report": "", "street": "Test St", "city": "Testville"},
-                "thumbs_up_count": i, "current_user_thumbed_up": False, "seconds_to_report": -1,
-                "beepInfo": {}, "chatInfo": {"private": False},
-            },
-            "alert_uuid": f"00000000-0000-4000-8000-00000000000{i}",
-        },
-    } for i, (dx, dy) in enumerate([(0.003, 0.004), (-0.004, -0.003)], 1)]
-    WORLD.parent.mkdir(parents=True, exist_ok=True)
-    WORLD.write_text(json.dumps({"wazers": wazers, "alerts": alerts}, indent=2))
-    print(f"wrote {WORLD}: {len(wazers)} wazers, {len(alerts)} alerts around {lon},{lat}")
-
 
 def _png(rgb, size=128):
     row = b"\x00" + bytes(rgb) * size
@@ -1473,7 +1413,6 @@ def selftest(srv):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--init-world", nargs=2, type=float, metavar=("LON", "LAT"))
     ap.add_argument("--signatures", action="store_true")
     ap.add_argument("--selftest", action="store_true")
     ap.add_argument("--add-mood", metavar="NAME", help="register a custom mood (id auto-assigned, solid-colour preview)")
@@ -1483,8 +1422,6 @@ def main():
         return add_mood(a.add_mood)
     if a.init_marketplace:
         return init_marketplace()
-    if a.init_world:
-        return init_world(*a.init_world)
     if a.signatures or a.selftest:
         srv = Server()
         if a.signatures:
