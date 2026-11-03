@@ -614,14 +614,23 @@ class Server:
                 log(f"LOGIN request shape unavailable: {type(ex).__name__}")
         return make_batch([e] if e else []), "login refused", self.login
 
-    def handle_static(self, body, now=None):
+    def handle_static(self, body, now=None, headers=None):
         now = now or time.time()
         _, protos = parse_request(unz(body))
         elems, notes = [], []
+        user = self.user_of(headers)
+        if any(cmd_of(e) in self.ACCOUNT_CMDS for p in protos for e in batch_elems(p)):
+            try:
+                ae, an = self.account_elems(protos, user, now)
+                elems += ae
+                notes += an
+                log("account (static): " + "; ".join(an))
+            except (ValueError, KeyError, IndexError, TypeError) as ex:
+                log(f"account command malformed ({type(ex).__name__}: {ex})")
         for p in protos:
             for el in batch_elems(p):
                 c = cmd_of(el)
-                if c in (2001, 2184):              # legacy text / client_info: nothing to answer
+                if c in (2001, 2184) or c in self.ACCOUNT_CMDS:   # legacy text / client_info / handled above
                     continue
                 if c == 2219:                      # register: "Get started" -> guest account
                     es = self.register_guest(protos)
@@ -938,7 +947,8 @@ class Server:
     def profile_elem(self, user):
         rec = auth.get_user(user["name"]) or {}
         return self._enc("my_profile", {
-            "basic_info": {"email": rec.get("email", ""), "email_verified": bool(rec.get("email")),
+            "basic_info": {"first_name": rec.get("first_name", ""), "last_name": rec.get("last_name", ""),
+                           "phone": rec.get("phone", ""), "email": rec.get("email", ""), "email_verified": bool(rec.get("email_verified")),
                            "join_date_sec": int(rec.get("created", time.time())), "points": int(rec.get("points", 500000)),
                            "last_login_sec": int(time.time()), "public_user_name": user["name"],
                            "anonymous": False, "is_registered": True, "is_aadc_restricted": False,
@@ -949,6 +959,51 @@ class Server:
             "user_id": user["uid"], "completed_percent": 100,
             "picture_id": auth.waze_user_id(user["uid"]),
             "mood_id": int(rec.get("mood", 1)), "username": user["name"]})
+
+    ACCOUNT_CMDS = {2381, 2452, 2469}
+
+    @staticmethod
+    def _sub(buf, num):
+        for n, w, v in D.parse_wire(buf):
+            if n == num and w == 2:
+                return v
+        return b""
+
+    def account_elems(self, protos, user, now):
+        """Profile save (2381: first/last name, phone, email...) and email verification (2452 / 2469).
+        There is no mail server here, so an email is marked verified straight away."""
+        elems, notes = [], []
+        for p in protos:
+            for el in batch_elems(p):
+                c = cmd_of(el)
+                if c not in self.ACCOUNT_CMDS:
+                    continue
+                body = D.parse_wire(el)[0][2]
+                if c == 2381:
+                    bi = self._sub(self._sub(body, 1), 1)
+                    f = {n: v.decode("utf-8", "replace") for n, w, v in D.parse_wire(bi) if w == 2}
+                    names = {1: "first_name", 2: "last_name", 3: "phone", 4: "email", 8: "free_text"}
+                    kw = {names[n]: v for n, v in f.items() if n in names}
+                    if "email" in kw:
+                        kw["email_verified"] = True
+                    if user and kw:
+                        auth.set_fields(user["name"], **kw)
+                    notes.append(f"profile saved: {sorted(kw)}")
+                elif c == 2452:
+                    em = next((v.decode("utf-8", "replace") for n, w, v in D.parse_wire(body) if n == 3 and w == 2), "")
+                    if user and em:
+                        auth.set_fields(user["name"], email=em, email_verified=True)
+                    e = self._enc("verify_email_response", {"status": {"code": "OK"}, "uuid": secrets.token_hex(8),
+                                  "user_id": user["uid"] if user else 0, "verification_token": secrets.token_urlsafe(24),
+                                  "extra_verification_required": False})
+                    elems.append(e)
+                    notes.append(f"email {em!r} set and marked verified (no mail is sent)")
+                elif c == 2469:
+                    em = (auth.get_user(user["name"]) or {}).get("email", "") if user else ""
+                    elems.append(self._enc("complete_verify_email_response", {"status": {"code": "OK"},
+                                 "user_id": user["uid"] if user else 0, "email": em, "email_type": "MAIN"}))
+                    notes.append("email verification completed")
+        return [e for e in elems if e is not None], notes
 
     def update_fields(self, protos, user):
         """Signup / rename / password change (update_user_fields_request 2499) -> update_user_fields_response element."""
@@ -1021,6 +1076,17 @@ class Server:
             sig = signature(lines, protos)
             rq = ",".join(self._ext_name(c) or str(c) for c in sorted(
                 {cmd_of(e) for p in protos for e in batch_elems(p)} - {2001}))
+            allc = {cmd_of(e) for p in protos for e in batch_elems(p)}
+            if allc & self.ACCOUNT_CMDS:
+                try:
+                    ae, an = self.account_elems(protos, user, now)
+                    log("account: " + "; ".join(an))
+                except (ValueError, KeyError, IndexError, TypeError) as ex:
+                    ae = []
+                    log(f"account command malformed ({type(ex).__name__}: {ex})")
+                if allc <= self.ACCOUNT_CMDS | {2001, 2184}:
+                    st = self._stamp(now)
+                    return make_batch(([st] if st else []) + ae + self._envelope()), "account command", self._base_tpl()
             if any(cmd_of(e) == 2499 for p in protos for e in batch_elems(p)):
                 try:
                     ue, note = self.update_fields(protos, user)
@@ -1294,7 +1360,7 @@ def request(flow):
         _SRV = _SRV or Server()
         body = flow.request.content or b""
         t0 = time.time()
-        data, info, tpl = _SRV.handle_static(body) if kind == "static" else _SRV.handle(kind, body, headers=flow.request.headers)
+        data, info, tpl = _SRV.handle_static(body, headers=flow.request.headers) if kind == "static" else _SRV.handle(kind, body, headers=flow.request.headers)
         who = _SRV.user_of(flow.request.headers) if kind == "command" else None
         STATS.record(kind, info, len(data), (time.time() - t0) * 1000, who["name"] if who else None)
         hdr, gz = _SRV.resp_headers(tpl)
@@ -1342,8 +1408,34 @@ def server_instance():
     return _SRV
 
 
+def _ms(flow):
+    try:
+        return int((flow.response.timestamp_end - flow.request.timestamp_start) * 1000)
+    except Exception:
+        return -1
+
+
+def error(flow):
+    """A request that failed outright (timeout, refused, upstream TLS error): this is what leaves the app waiting."""
+    if flow.request and "waze" in flow.request.pretty_host:
+        log(f"UPSTREAM FAILED {flow.request.method} {flow.request.pretty_host}{flow.request.path.split('?')[0]}: {flow.error.msg if flow.error else '?'}")
+
+
+def tls_failed_client(data):
+    """The app refused our certificate (pinning or untrusted CA) for this host."""
+    try:
+        log(f"TLS REFUSED BY APP for {data.conn.sni or data.context.server.address}: {data.conn.error}")
+    except Exception:
+        pass
+
+
 def response(flow):
     """Describe (and keep) what real Waze answered to the one request we let through (geo-server discovery)."""
+    if http is not None and flow.response is not None and "waze" in flow.request.pretty_host and \
+            getattr(flow.server_conn, "timestamp_start", None):                 # went to real Waze, not answered here
+        host = flow.request.pretty_host
+        if "rtserver" not in flow.request.path:
+            log(f"UPSTREAM {flow.response.status_code} {_ms(flow)}ms {host}{flow.request.path.split('?')[0][:80]}")
     if http is None or not flow.metadata.get("pserver_geo") or flow.response is None or _SRV is None:
         return
     raw = flow.response.content or b""
